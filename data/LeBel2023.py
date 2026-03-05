@@ -83,7 +83,7 @@ class LeBel2023StimulusSet(BaseDataset):
 
         # Locate words tier
         tier_match = re.search(
-            r'name = "words"(.*?)(name = |$)', content, re.DOTALL)
+            r'name = "word"(.*?)(name = |$)', content, re.DOTALL)
         if tier_match:
             tier_content = tier_match.group(1)
             # Extract text = "..."
@@ -362,7 +362,7 @@ class LeBel2023TRStimulusSet(BaseDataset):
             content = f.read()
 
         tier_match = re.search(
-            r'name = "words"(.*?)(name = |$)', content, re.DOTALL)
+            r'name = "word"(.*?)(name = |$)', content, re.DOTALL)
         if not tier_match:
             return []
 
