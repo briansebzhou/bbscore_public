@@ -3,28 +3,21 @@ LeBel2023 TR-level benchmark for audio stimuli.
 
 Noise ceiling
 -------------
-Per-voxel noise ceiling is precomputed via leave-one-out inter-subject
-correlation (ISC) across all 9 subjects (UTS01-UTS09) in native volume
-space (see compute_ceiling.py). For each target subject S:
+Per-voxel noise ceiling is computed via within-subject split-half
+reliability from repeated presentations of 'wheretheressmoke'
+(see compute_splithalf_ceiling.py):
 
-  1. Each subject's mask_thick.nii.gz defines cortical voxels in volume
-     space. Voxel positions are converted to world coordinates (mm) via
-     the NIfTI affine.
-  2. A KD-tree nearest-neighbor mapping aligns other subjects' voxels
-     to S's voxel grid (max distance 5 mm).
-  3. For each story, other subjects' fMRI is resampled to S's space and
-     averaged. Per-voxel Pearson r(S, mean_others) is computed across TRs.
-  4. Median across stories gives one ceiling value per voxel.
+  1. Split runs into odd/even halves, average each half.
+  2. Per-voxel Pearson correlation between the two halves.
+  3. Spearman-Brown correction: r_ceiling = 2*r / (1 + r).
 
-A voxel passes the ceiling filter if:
-  - At least 2 other subjects have a voxel within 5 mm (validity mask)
-  - Its ceiling value exceeds 0.01 (above the noise floor)
+Voxels with ceiling <= 0.15 are excluded. This retains 26-47% of
+whole-brain voxels depending on subject. All scoring operates on
+ceiling-filtered voxels only: ridge regression runs on the subset,
+and spatial masks (whole-brain, language, region groups) are mapped
+into the filtered voxel space before ridge.
 
-This retains ~60% of whole-brain voxels. All scoring (ridge Pearson/R2,
-language mask, region aggregation) uses only ceiling-filtered voxels.
-Both unceiled and ceiled (score / ceiling) values are reported.
-
-The precomputed ceiling is stored in data/lebel2023_ceiling.npz.
+The precomputed ceiling is stored in data/lebel2023_ceiling_splithalf.npz.
 """
 import os
 import pickle
@@ -393,151 +386,188 @@ class LeBel2023AudioTRBenchmark:
         # 5. Ridge regression
         if run_ridge:
             X = np.concatenate(all_features, axis=0)
-            y = np.concatenate(all_fmri, axis=0)
+            y_full = np.concatenate(all_fmri, axis=0)
             groups = np.array(all_story_labels)
+            n_voxels_full = y_full.shape[1]
 
-            print(f"Total TRs: {X.shape[0]}, "
-                  f"Feature dim: {X.shape[1]}, "
-                  f"Voxels: {y.shape[1]}")
-
-            fold_scores = self._run_group_kfold(X, y, groups)
-
-            median_pearson = np.median(
-                fold_scores['pearson'], axis=0)
-            median_r2 = np.median(fold_scores['r2'], axis=0)
-
-            # Apply ceiling filter to all scoring.
-            # ceiling_mask: voxels with reliable inter-subject
-            # agreement (ISC > 0.01). Excludes noise-floor voxels
-            # (~40% of whole-brain mask).
+            # --- Pre-ridge: ceiling filter + region masks ---
             cm = ceiling_mask
             n_cm = int(cm.sum())
+            ceiling_filtered = ceiling[cm]
 
-            # Intersect language mask with ceiling filter
-            lang_mask = (
-                (median_pearson > self.lang_mask_threshold) & cm)
-            n_lang_voxels = int(np.sum(lang_mask))
-            print(f"Ceiling filter: {n_cm}/{y.shape[1]} voxels")
-            print(f"Language mask: {n_lang_voxels} voxels "
-                  f"(r>{self.lang_mask_threshold} & ceiling)")
+            # Subset fMRI to ceiling-filtered voxels only
+            y = y_full[:, cm]
 
-            ridge_key = ('torch_ridge' if 'torch_ridge' in self.metrics
-                         else 'ridge')
-
-            ceil_vals = ceiling[cm]
-            results[ridge_key] = {
-                'raw_pearson': fold_scores['pearson'],
-                'raw_r2': fold_scores['r2'],
-                'median_pearson_all': median_pearson,
-                'median_r2_all': median_r2,
-                'ceiling_mask': cm,
-                'n_ceiling_voxels': n_cm,
-                'final_pearson_unceiled': float(
-                    np.median(median_pearson[cm])),
-                'final_pearson_ceiled': float(
-                    np.median(median_pearson[cm] / ceil_vals)),
-                'final_r2_unceiled': float(
-                    np.median(median_r2[cm])),
-                'final_r2_ceiled': float(
-                    np.median(median_r2[cm] / ceil_vals)),
-                'lang_mask': lang_mask,
-                'n_lang_voxels': n_lang_voxels,
-                'final_pearson_lang_unceiled': (
-                    float(np.median(median_pearson[lang_mask]))
-                    if n_lang_voxels > 0 else 0.0),
-                'final_pearson_lang_ceiled': (
-                    float(np.median(
-                        median_pearson[lang_mask]
-                        / ceiling[lang_mask]))
-                    if n_lang_voxels > 0 else 0.0),
-                'final_r2_lang_unceiled': (
-                    float(np.median(median_r2[lang_mask]))
-                    if n_lang_voxels > 0 else 0.0),
-                'final_r2_lang_ceiled': (
-                    float(np.median(
-                        median_r2[lang_mask]
-                        / ceiling[lang_mask]))
-                    if n_lang_voxels > 0 else 0.0),
-            }
-            r = results[ridge_key]
-            print(f"Ridge ({n_cm} voxels): "
-                  f"unceiled Pearson={r['final_pearson_unceiled']:.4f}, "
-                  f"ceiled={r['final_pearson_ceiled']:.4f}")
-            print(f"Ridge ({n_cm} voxels): "
-                  f"unceiled R2={r['final_r2_unceiled']:.4f}, "
-                  f"ceiled={r['final_r2_ceiled']:.4f}")
-            if n_lang_voxels > 0:
-                print(
-                    f"Ridge lang ({n_lang_voxels}): "
-                    f"unceiled Pearson="
-                    f"{r['final_pearson_lang_unceiled']:.4f}, "
-                    f"ceiled="
-                    f"{r['final_pearson_lang_ceiled']:.4f}")
-
-            # --- Region-based scoring ---
-            # Scores for excluded voxels set to NaN so RegionMapper
-            # only aggregates ceiling-filtered voxels.
+            # Load region mapper for anatomical masks
+            region_mapper = None
+            spatial_masks = {'whole_brain': np.ones(n_cm, dtype=bool)}
+            region_groups = [
+                'language', 'non_language', 'temporal', 'frontal',
+                'parietal', 'occipital', 'auditory', 'wernickes',
+                'brocas',
+            ]
             try:
                 fs_labels = LeBel2023FreeSurferLabels()
                 label_dir = fs_labels.ensure_downloaded(
                     self.subject_id)
                 region_mapper = RegionMapper(label_dir)
 
-                mp_masked = median_pearson.copy()
-                mr2_masked = median_r2.copy()
-                mp_masked[~cm] = np.nan
-                mr2_masked[~cm] = np.nan
-                region_scores = region_mapper.aggregate_scores(
-                    mp_masked, mr2_masked)
-                results[ridge_key]['regions'] = region_scores
+                # Map full-space indices to filtered space
+                full_to_filtered = np.full(n_voxels_full, -1,
+                                           dtype=int)
+                full_to_filtered[cm] = np.arange(n_cm)
 
-                # Anatomical language mask intersected with ceiling
-                anat_lang_idx = region_mapper.get_language_indices()
-                n_voxels = y.shape[1]
-                anat_lang_mask = np.zeros(n_voxels, dtype=bool)
-                valid_idx = anat_lang_idx[
-                    anat_lang_idx < n_voxels]
-                anat_lang_mask[valid_idx] = True
-                anat_lang_mask &= cm
-
-                results[ridge_key]['lang_mask_functional'] = lang_mask
-                lang_mask = anat_lang_mask
-                results[ridge_key]['lang_mask'] = lang_mask
-                n_lang_voxels = int(np.sum(lang_mask))
-                results[ridge_key]['n_lang_voxels'] = n_lang_voxels
-                results[ridge_key]['final_pearson_lang_unceiled'] = (
-                    float(np.median(median_pearson[lang_mask]))
-                    if n_lang_voxels > 0 else 0.0)
-                results[ridge_key]['final_pearson_lang_ceiled'] = (
-                    float(np.median(
-                        median_pearson[lang_mask]
-                        / ceiling[lang_mask]))
-                    if n_lang_voxels > 0 else 0.0)
-                results[ridge_key]['final_r2_lang_unceiled'] = (
-                    float(np.median(median_r2[lang_mask]))
-                    if n_lang_voxels > 0 else 0.0)
-                results[ridge_key]['final_r2_lang_ceiled'] = (
-                    float(np.median(
-                        median_r2[lang_mask]
-                        / ceiling[lang_mask]))
-                    if n_lang_voxels > 0 else 0.0)
-
-                lang_grp = region_scores['per_group'].get(
-                    'language', {})
-                print(
-                    f"Region scoring: language group "
-                    f"Pearson="
-                    f"{lang_grp.get('median_pearson', 0):.4f}, "
-                    f"non-language="
-                    f"{region_scores['per_group'].get('non_language', {}).get('median_pearson', 0):.4f}")
+                for grp in region_groups:
+                    grp_idx_full = region_mapper.get_group_indices(grp)
+                    grp_idx_full = grp_idx_full[
+                        grp_idx_full < n_voxels_full]
+                    # Intersect with ceiling mask
+                    in_ceiling = cm[grp_idx_full]
+                    grp_idx_filtered = full_to_filtered[
+                        grp_idx_full[in_ceiling]]
+                    mask = np.zeros(n_cm, dtype=bool)
+                    mask[grp_idx_filtered] = True
+                    spatial_masks[grp] = mask
             except Exception as e:
-                print(f"Warning: Region-based scoring failed: {e}")
+                print(f"Warning: Region masks failed: {e}")
+
+            print(f"Total TRs: {X.shape[0]}, "
+                  f"Feature dim: {X.shape[1]}, "
+                  f"Voxels: {n_cm} (filtered from {n_voxels_full})")
+            for grp, mask in spatial_masks.items():
+                if grp != 'whole_brain':
+                    print(f"  {grp}: {int(mask.sum())} voxels")
+
+            # --- Run ridge with all spatial masks ---
+            fold_scores = self._run_group_kfold(
+                X, y, groups, spatial_masks=spatial_masks)
+
+            median_pearson = np.median(
+                fold_scores['pearson'], axis=0)
+            median_r2 = np.median(fold_scores['r2'], axis=0)
+
+            ridge_key = ('torch_ridge' if 'torch_ridge' in self.metrics
+                         else 'ridge')
+
+            # --- Level 1: Global metrics ---
+            results[ridge_key] = {
+                'n_ceiling_voxels': n_cm,
+                'final_pearson_unceiled': float(
+                    np.median(median_pearson)),
+                'final_pearson_ceiled': float(
+                    np.median(median_pearson / ceiling_filtered)),
+                'final_r2_unceiled': float(
+                    np.median(median_r2)),
+                'final_r2_ceiled': float(
+                    np.median(median_r2 / ceiling_filtered)),
+            }
+
+            # Per-region global metrics
+            for grp, mask in spatial_masks.items():
+                if grp == 'whole_brain':
+                    continue
+                n_grp = int(mask.sum())
+                if n_grp == 0:
+                    continue
+                results[ridge_key][f'{grp}_pearson_unceiled'] = float(
+                    np.median(median_pearson[mask]))
+                results[ridge_key][f'{grp}_pearson_ceiled'] = float(
+                    np.median(median_pearson[mask]
+                              / ceiling_filtered[mask]))
+                results[ridge_key][f'{grp}_n_voxels'] = n_grp
+
+            r = results[ridge_key]
+            print(f"Ridge ({n_cm} voxels): "
+                  f"unceiled={r['final_pearson_unceiled']:.4f}, "
+                  f"ceiled={r['final_pearson_ceiled']:.4f}")
+            lang_n = r.get('language_n_voxels', 0)
+            if lang_n > 0:
+                print(f"Ridge lang ({lang_n}): "
+                      f"unceiled="
+                      f"{r['language_pearson_unceiled']:.4f}, "
+                      f"ceiled="
+                      f"{r['language_pearson_ceiled']:.4f}")
+
+            # Build story index -> name mapping
+            used_stories = [
+                s for s in stimulus_set.story_names
+                if s in story_fmri]
+            story_idx_to_name = {
+                i: name for i, name in enumerate(used_stories)}
+            results[ridge_key]['story_names'] = story_idx_to_name
+
+            # --- Levels 2-4: Per-TR spatial results ---
+            per_tr = fold_scores['per_tr_spatial']
+            per_tr_groups = fold_scores['per_tr_groups']
+
+            # Build per-story TR traces (Level 4)
+            per_story_traces = {}
+            per_story_summary = {}
+            unique_groups = np.unique(per_tr_groups)
+            for s_idx in unique_groups:
+                s_name = story_idx_to_name.get(int(s_idx),
+                                               str(int(s_idx)))
+                s_mask = per_tr_groups == s_idx
+                story_traces = {}
+                story_summary = {}
+                for grp, tr_arr in per_tr.items():
+                    vals = tr_arr[s_mask]
+                    valid = vals[~np.isnan(vals)]
+                    story_traces[grp] = vals
+                    story_summary[grp] = (
+                        float(np.median(valid))
+                        if len(valid) > 0 else 0.0)
+                per_story_traces[s_name] = story_traces
+                per_story_summary[s_name] = story_summary
+
+            # Level 3: Per-story summary
+            results[ridge_key]['per_story_spatial'] = per_story_summary
+
+            # Level 4: Per-story TR traces
+            results[ridge_key]['per_story_tr_traces'] = (
+                per_story_traces)
+
+            # Level 2: Global TR progression
+            # Align stories by TR position, average across stories
+            max_trs = max(
+                len(v['whole_brain'])
+                for v in per_story_traces.values())
+            global_tr_progression = {}
+            for grp in per_tr.keys():
+                progression = np.full(max_trs, np.nan)
+                for t in range(max_trs):
+                    vals_at_t = []
+                    for traces in per_story_traces.values():
+                        if t < len(traces[grp]):
+                            v = traces[grp][t]
+                            if not np.isnan(v):
+                                vals_at_t.append(v)
+                    if vals_at_t:
+                        progression[t] = float(np.median(vals_at_t))
+                global_tr_progression[grp] = progression
+            results[ridge_key]['global_tr_progression'] = (
+                global_tr_progression)
+
+            # Print summaries
+            for grp in ['whole_brain', 'language']:
+                if grp not in per_tr:
+                    continue
+                valid = per_tr[grp][~np.isnan(per_tr[grp])]
+                if len(valid) > 0:
+                    print(f"Per-TR spatial ({grp}): "
+                          f"median={np.median(valid):.4f}, "
+                          f"mean={np.mean(valid):.4f}")
+
+            lang_mask = spatial_masks.get('language')
 
         # 6. Within-story temporal RSA
         if run_temporal_rsa:
+            # Filter fMRI to ceiling voxels for RSA too
+            all_fmri_filtered = [f[:, cm] for f in all_fmri]
             print("Computing within-story temporal RSA...")
             rsa_results = self._compute_temporal_rsa(
-                all_features, all_fmri, lang_mask=lang_mask)
+                all_features, all_fmri_filtered,
+                lang_mask=lang_mask)
             results['temporal_rsa'] = rsa_results
             print(f"Temporal RSA - "
                   f"Median (all voxels): "
@@ -547,26 +577,6 @@ class LeBel2023AudioTRBenchmark:
                 print(f"Temporal RSA - "
                       f"Median (lang voxels): "
                       f"{rsa_results['median_rsa_lang']:.4f}")
-
-            # --- Region-based temporal RSA ---
-            try:
-                if region_mapper is None:
-                    fs_labels = LeBel2023FreeSurferLabels()
-                    label_dir = fs_labels.ensure_downloaded(
-                        self.subject_id)
-                    region_mapper = RegionMapper(label_dir)
-                rsa_region_scores = region_mapper.aggregate_rsa_scores(
-                    all_features, all_fmri)
-                results['temporal_rsa']['regions'] = rsa_region_scores
-                lang_rsa = rsa_region_scores['per_group'].get(
-                    'language', {})
-                print(
-                    f"Region RSA: language="
-                    f"{lang_rsa.get('median_rsa', 0):.4f}, "
-                    f"non-language="
-                    f"{rsa_region_scores['per_group'].get('non_language', {}).get('median_rsa', 0):.4f}")
-            except Exception as e:
-                print(f"Warning: Region-based RSA failed: {e}")
 
         results['timestamp'] = datetime.datetime.utcnow().isoformat()
         results['hrf_delay'] = self.hrf_delay
@@ -598,13 +608,28 @@ class LeBel2023AudioTRBenchmark:
 
         return merged
 
-    def _run_group_kfold(self, X, y, groups):
+    def _run_group_kfold(self, X, y, groups, spatial_masks=None):
         """
         Ridge regression with GroupKFold CV (stories as groups).
 
+        y is already filtered to ceiling voxels.
+
+        Args:
+            spatial_masks: dict of {name: bool_mask} over the
+                filtered voxel space. Per-TR spatial correlation is
+                computed for each mask.
+
         Returns:
-            dict with 'pearson' and 'r2' keys, each (n_folds, n_voxels)
+            dict with:
+              'pearson': (n_folds, n_voxels)
+              'r2': (n_folds, n_voxels)
+              'per_tr_spatial': {mask_name: (n_total_TRs,)}
+              'per_tr_groups': (n_total_TRs,)
         """
+        if spatial_masks is None:
+            spatial_masks = {
+                'whole_brain': np.ones(y.shape[1], dtype=bool)}
+
         n_unique_groups = len(np.unique(groups))
         n_splits = min(self.n_cv_folds, n_unique_groups)
 
@@ -621,6 +646,12 @@ class LeBel2023AudioTRBenchmark:
         pearson_scores = []
         r2_scores = []
 
+        n_total = X.shape[0]
+        per_tr_spatial = {
+            name: np.full(n_total, np.nan)
+            for name in spatial_masks}
+        per_tr_groups = groups.copy()
+
         for fold_idx, (train_idx, val_idx) in enumerate(
                 gkf.split(X, y, groups)):
             print(f"  Fold {fold_idx + 1}/{n_splits}: "
@@ -633,19 +664,32 @@ class LeBel2023AudioTRBenchmark:
             model.fit(X_train, y_train)
             preds = model.predict(X_val)
 
+            # Per-voxel Pearson correlation
             fold_pearson = np.array([
                 pearson_correlation_scorer(y_val[:, i], preds[:, i])
                 for i in range(y.shape[1])
             ])
             pearson_scores.append(fold_pearson)
 
+            # Per-voxel R2
             fold_r2 = np.array([
                 r2_score(y_val[:, i], preds[:, i])
                 for i in range(y.shape[1])
             ])
             r2_scores.append(fold_r2)
 
+            # Per-TR spatial correlation for each mask
+            for mask_name, mask in spatial_masks.items():
+                p_v = preds[:, mask]
+                y_v = y_val[:, mask]
+                for local_i, global_i in enumerate(val_idx):
+                    per_tr_spatial[mask_name][global_i] = (
+                        pearson_correlation_scorer(
+                            y_v[local_i], p_v[local_i]))
+
         return {
             'pearson': np.array(pearson_scores),
             'r2': np.array(r2_scores),
+            'per_tr_spatial': per_tr_spatial,
+            'per_tr_groups': per_tr_groups,
         }

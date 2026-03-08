@@ -272,23 +272,24 @@ class LeBel2023Assembly(BaseDataset):
 
         print(f"DEBUG: Final fmri_data shape: {fmri_data.shape}")
 
-        # Noise ceiling: per-voxel leave-one-out inter-subject correlation.
-        # Precomputed by compute_ceiling.py using all 9 subjects (UTS01-UTS09).
-        # For each subject S, each story, each voxel:
-        #   ceiling = pearson_r(S_timeseries, mean(other_subjects)_timeseries)
-        # Then median across stories -> (81126,) per subject.
-        # Falls back to np.ones if ceiling file not found or subject missing.
+        # Noise ceiling: within-subject split-half reliability.
+        # Precomputed by compute_splithalf_ceiling.py from repeated
+        # presentations of 'wheretheressmoke'. Per-voxel Pearson
+        # correlation between odd/even run halves with Spearman-Brown
+        # correction. Falls back to np.ones if file not found.
         n_voxels = fmri_data.shape[1]
         ncsnr = self._load_ceiling(n_voxels)
 
         return fmri_data, ncsnr
 
     def _load_ceiling(self, n_voxels):
-        """Load precomputed per-voxel noise ceiling for the requested subject."""
+        """Load precomputed per-voxel split-half reliability ceiling."""
         ceiling_path = os.path.join(
-            os.path.dirname(__file__), "lebel2023_ceiling.npz")
+            os.path.dirname(__file__),
+            "lebel2023_ceiling_splithalf.npz")
         if not os.path.exists(ceiling_path):
-            print("Warning: Ceiling file not found, using placeholder ceiling=1.0")
+            print("Warning: Split-half ceiling file not found, "
+                  "using placeholder ceiling=1.0")
             return np.ones(n_voxels, dtype=np.float32)
 
         data = np.load(ceiling_path, allow_pickle=True)
@@ -296,13 +297,14 @@ class LeBel2023Assembly(BaseDataset):
         if subj in data:
             ceiling = data[subj].astype(np.float32)
             ceiling = np.clip(ceiling, 1e-3, None)
-            print(f"Loaded noise ceiling for {subj}: "
+            print(f"Loaded split-half ceiling for {subj}: "
                   f"median={np.median(ceiling):.4f}, "
                   f"mean={np.mean(ceiling):.4f}")
             return ceiling
         else:
             print(
-                f"Warning: No ceiling for {subj}, using placeholder ceiling=1.0")
+                f"Warning: No ceiling for {subj}, "
+                "using placeholder ceiling=1.0")
             return np.ones(n_voxels, dtype=np.float32)
 
     def __len__(self):
@@ -602,12 +604,11 @@ class LeBel2023TRAssembly(BaseDataset):
         # Determine voxel count from first story
         n_voxels = next(iter(story_data.values())).shape[1]
 
-        # Noise ceiling: leave-one-out inter-subject correlation (ISC).
-        # Precomputed by compute_ceiling.py using all 9 subjects in volume
-        # space. For subject S, each story, each voxel:
-        #   ceiling = pearson_r(S, mean(others)) across TRs
-        # Then median across stories. Voxels with ceiling <= 0.01 are
-        # excluded (below noise floor).
+        # Noise ceiling: within-subject split-half reliability.
+        # Precomputed by compute_splithalf_ceiling.py from repeated
+        # presentations of 'wheretheressmoke'. Per-voxel Pearson
+        # correlation between odd/even run halves with Spearman-Brown
+        # correction. Voxels with ceiling <= 0.15 are excluded.
         ceiling, ceiling_mask = self._load_ceiling(n_voxels)
 
         total_trs = sum(v.shape[0] for v in story_data.values())
@@ -617,14 +618,20 @@ class LeBel2023TRAssembly(BaseDataset):
         return story_data, ceiling, ceiling_mask
 
     def _load_ceiling(self, n_voxels):
-        """Load precomputed per-voxel noise ceiling and validity mask."""
+        """Load precomputed per-voxel split-half reliability ceiling.
+
+        Ceiling is computed via split-half correlation of repeated
+        presentations of 'wheretheressmoke' with Spearman-Brown
+        correction. Voxels with ceiling <= 0.15 are excluded.
+        """
         ceiling_path = os.path.join(
-            os.path.dirname(__file__), "lebel2023_ceiling.npz")
+            os.path.dirname(__file__),
+            "lebel2023_ceiling_splithalf.npz")
         subj = self.subjects[0]
-        CEILING_THRESHOLD = 0.01
+        CEILING_THRESHOLD = 0.15
 
         if not os.path.exists(ceiling_path):
-            print("Warning: Ceiling file not found, "
+            print("Warning: Split-half ceiling file not found, "
                   "using placeholder ceiling=1.0")
             return (np.ones(n_voxels, dtype=np.float32),
                     np.ones(n_voxels, dtype=bool))
@@ -637,16 +644,12 @@ class LeBel2023TRAssembly(BaseDataset):
                     np.ones(n_voxels, dtype=bool))
 
         ceiling = data[subj].astype(np.float32)
-        valid_key = f'{subj}_valid'
-        valid = (data[valid_key] if valid_key in data
-                 else np.ones(len(ceiling), dtype=bool))
 
-        # Combined mask: validity filter AND ceiling above noise floor
-        ceiling_mask = valid & (ceiling > CEILING_THRESHOLD)
+        ceiling_mask = ceiling > CEILING_THRESHOLD
         n_kept = ceiling_mask.sum()
-        print(f"Noise ceiling for {subj}: "
+        print(f"Split-half ceiling for {subj}: "
               f"median={np.median(ceiling[ceiling_mask]):.4f}, "
-              f"{n_kept}/{len(ceiling)} voxels above threshold "
+              f"{n_kept}/{len(ceiling)} voxels above {CEILING_THRESHOLD} "
               f"({100 * n_kept / len(ceiling):.1f}%)")
 
         ceiling = np.clip(ceiling, 1e-3, None)
