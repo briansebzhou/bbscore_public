@@ -332,7 +332,6 @@ class LeBel2023TRBenchmark:
             assembly.get_assembly(
                 story_names=stimulus_set.story_names))
 
-
         # 3. Extract features and align with fMRI per story
         all_features = []
         all_fmri = []
