@@ -26,12 +26,12 @@ class LeBel2023StimulusSet(BaseDataset):
 
         self.dataset_dir = os.path.join(self.root_dir, "ds003020")
         self.textgrid_dir = os.path.join(
-            self.dataset_dir, "derivative", "TextGrids")
+            self.dataset_dir, "derivatives", "TextGrids")
 
         self._prepare_stimuli()
 
     def _prepare_stimuli(self):
-        s3_source = "s3://openneuro.org/ds003020/derivative/TextGrids/"
+        s3_source = "s3://openneuro.org/ds003020/derivatives/TextGrids/"
 
         # Download TextGrids if not present
         if not os.path.exists(self.textgrid_dir) or not os.listdir(self.textgrid_dir):
@@ -118,7 +118,7 @@ class LeBel2023Assembly(BaseDataset):
         self.subjects = subjects
         self.dataset_dir = os.path.join(self.root_dir, "ds003020")
         self.data_dir = os.path.join(
-            self.dataset_dir, "derivative", "preprocessed_data")
+            self.dataset_dir, "derivatives", "preprocessed_data")
 
     def get_assembly(self, subjects=None):
         """
@@ -132,7 +132,7 @@ class LeBel2023Assembly(BaseDataset):
                 subjects = [subjects]
             self.subjects = subjects
 
-        s3_base = "s3://openneuro.org/ds003020/derivative/preprocessed_data/"
+        s3_base = "s3://openneuro.org/ds003020/derivatives/preprocessed_data/"
 
         all_subject_data = []
 
@@ -142,7 +142,7 @@ class LeBel2023Assembly(BaseDataset):
         # We should load matching *.hf5 files.
 
         # Get list of stories from the TextGrid directory to ensure alignment
-        tg_dir = os.path.join(self.dataset_dir, "derivative", "TextGrids")
+        tg_dir = os.path.join(self.dataset_dir, "derivatives", "TextGrids")
         if not os.path.exists(tg_dir):
             # Try to instantiate stimulus set to trigger download?
             # Or just trust it exists if Benchmark calls stimulus first.
@@ -348,12 +348,12 @@ class LeBel2023TRStimulusSet(BaseDataset):
 
         self.dataset_dir = os.path.join(self.root_dir, "ds003020")
         self.textgrid_dir = os.path.join(
-            self.dataset_dir, "derivative", "TextGrids")
+            self.dataset_dir, "derivatives", "TextGrids")
 
         self._prepare_stimuli()
 
     def _prepare_stimuli(self):
-        s3_source = "s3://openneuro.org/ds003020/derivative/TextGrids/"
+        s3_source = "s3://openneuro.org/ds003020/derivatives/TextGrids/"
 
         if not os.path.exists(self.textgrid_dir) or \
                 not os.listdir(self.textgrid_dir):
@@ -474,7 +474,7 @@ class LeBel2023TRAssembly(BaseDataset):
         self.subjects = subjects
         self.dataset_dir = os.path.join(self.root_dir, "ds003020")
         self.data_dir = os.path.join(
-            self.dataset_dir, "derivative", "preprocessed_data")
+            self.dataset_dir, "derivatives", "preprocessed_data")
 
     @staticmethod
     def _extract_story_name(filepath: str) -> str:
@@ -496,7 +496,7 @@ class LeBel2023TRAssembly(BaseDataset):
 
     def _ensure_data_downloaded(self, subj: str) -> List[str]:
         """Download subject data if needed, return sorted list of hf5 paths."""
-        s3_base = "s3://openneuro.org/ds003020/derivative/preprocessed_data/"
+        s3_base = "s3://openneuro.org/ds003020/derivatives/preprocessed_data/"
         subj_path = os.path.join(self.data_dir, subj)
 
         hf5_files = sorted(
@@ -510,7 +510,7 @@ class LeBel2023TRAssembly(BaseDataset):
             print(f"Found {len(hf5_files)} files for {subj}, "
                   f"expected 84. Downloading...")
             import shutil
-            if os.path.exists(subj_path) and len(hf5_files) > 0:
+            if os.path.exists(subj_path):
                 shutil.rmtree(subj_path)
             try:
                 self.fetch(
@@ -977,7 +977,7 @@ class LeBel2023FreeSurferLabels(BaseDataset):
     """
 
     S3_BASE = ("s3://openneuro.org/ds003020/"
-               "derivative/freesurfer_subjdir/")
+               "derivatives/freesurfer_subjdir/")
     NEEDED_FILES = [
         'lh.aparc.annot', 'rh.aparc.annot',
         'lh.cortex.label', 'rh.cortex.label',
@@ -989,7 +989,7 @@ class LeBel2023FreeSurferLabels(BaseDataset):
 
     def _label_dir(self, subject: str) -> str:
         return os.path.join(
-            self.dataset_dir, "derivative",
+            self.dataset_dir, "derivatives",
             "freesurfer_subjdir", subject, "label")
 
     def ensure_downloaded(self, subject: str) -> str:
