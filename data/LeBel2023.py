@@ -120,13 +120,18 @@ class LeBel2023Assembly(BaseDataset):
         self.data_dir = os.path.join(
             self.dataset_dir, "derivative", "preprocessed_data")
 
-    def get_assembly(self):
+    def get_assembly(self, subjects=None):
         """
         Returns:
             fmri_data: (n_stories, n_voxels) - AVERAGED over time for now to match benchmark structure
                        OR concatenated time series if benchmark supports it.
             noise_ceiling: (n_voxels,)
         """
+        if subjects is not None:
+            if isinstance(subjects, str):
+                subjects = [subjects]
+            self.subjects = subjects
+
         s3_base = "s3://openneuro.org/ds003020/derivative/preprocessed_data/"
 
         all_subject_data = []
