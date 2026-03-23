@@ -7,6 +7,12 @@ BBScore is a framework for benchmarking deep learning models against neural (fMR
 - **Data Analysis Notebook (By Josh Wilson)**
 [Open in Colab](https://colab.research.google.com/drive/1Hwkro4UnmqsXWso6MEz25P1b3a0RWpbg?usp=sharing)
 
+## Fork Contribution
+ - Introduced the biologically-constrained [primate retina CNN (prCNN) model](https://github.com/Chichilnisky-Lab/primate-cnn-model);
+ - Created scripts for [variance partitioning](./run_variance_partitioning.py) and [cross model analysis](./run_m2m.py);
+ - Improved [run.py](./run.py) and related scripts to slice input data based on available system RAM and VRAM before loading to memory, avoiding OOM errors;
+ - Performed detailed comparative analysis of prCNN versus DINOv2 in terms of primate V1 alignment and cross model alighment, details at the [project](./project) directory.
+
 ## Quick Start
 
 ### 1. Check Your System
