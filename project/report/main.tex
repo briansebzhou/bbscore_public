@@ -113,8 +113,9 @@ Linear-Nonlinear (LN) cascade models for accurately capturing the firing rates
 of numerically dominant RGC types in the macaque and human retina 
 given visual stimuli \cite{alex_retina_cnn}.
 
-This study contributes to the BBScore framework \cite{noauthor_neuroailabbbscore_public_2026} 
-in the following ways:
+This study contributes to the BBScore framework \cite{noauthor_neuroailabbbscore_public_2026}
+in the following ways
+\footnote{The codebase is available at \url{https://github.com/briansebzhou/bbscore_public}.}:
 \begin{itemize}
     \item \textbf{Model Integration}: 
     This study introduced the biologically-constrained prCNN into the BBScore registry, 
@@ -124,9 +125,8 @@ in the following ways:
     that extend the core capabilities of BBScore for model-to-model investigations.
     \item \textbf{Pipeline Optimization}:
     This study optimized the analysis pipeline to slice input data based on available 
-    system RAM and VRAM before loading to memory, avoiding out-of-memory errors.
+    system RAM and VRAM before loading, avoiding out-of-memory errors.
 \end{itemize}
-The codebase is available at \url{https://github.com/briansebzhou/bbscore_public}.
 
 \section{Approach}
 The core hypothesis is that DINOv2 naturally learns early visual
@@ -161,7 +161,7 @@ fMRI recordings were obtained, \texttt{TVSDStimulusTrainSet}, are provided to ea
 Stimulus preprocessing
 follows each model's training regime: The prCNN was trained on grayscale
 images each jittered across 50 frames to approximate saccades; this study therefore converts each
-\texttt{TVSD} image to grayscale and repeat it across 50 frames as input. DINOv2 was
+input image to grayscale and repeats it across 50 frames. DINOv2 was
 trained on full-color \texttt{TVSD} images; thus this study evaluates it on both grayscale and
 full-color stimuli---the former controls for chromatic information in the input, and the
 latter matches the model's native, color-trained operating regime.
@@ -181,10 +181,10 @@ to natural images \cite{alex_retina_cnn}. The model takes as input a stimulus
 movie consisting of 50 frames of a grayscale image jittered over time to approximate saccades. 
 The architecture consists of:
 \begin{itemize}
-    \item \textbf{conv0}: The first layer applies eight convolutions over the
+    \item \textbf{conv0}: The first layer applies eight convolution filters over the
     50 temporal frames (treated as input channels) followed by
     Batch Normalization and a ReLU activation.
-    \item \textbf{conv1}: The second layer applies sixteen 2D convolutions followed by
+    \item \textbf{conv1}: The second layer applies sixteen convolution filters followed by
     Batch Normalization and ReLU.
     \item \textbf{linear}: A fully-connected linear layer followed by cell-specific shift/scale
     parameters and a softplus nonlinearity to output the firing rates of
@@ -201,7 +201,7 @@ evaluate a grayscale variant of DINOv2 to control for color as a confounding
 variable.
 
 \noindent Figure~\ref{fig:architectures} summarizes the two model architectures alongside
-the layer naming used throughout this report.
+the layer naming used in this study.
 \begin{figure}[tbp]
     \centering
     \includegraphics[width=0.8\textwidth]{figures/model_architectures.png}
