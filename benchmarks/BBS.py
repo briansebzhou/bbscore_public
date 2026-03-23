@@ -356,6 +356,18 @@ class BenchmarkScore:
             features_test_raw, labels_test = self.extractor.extract_features(
                 self.stimulus_test, downsample_factor, self.test_batch_size)
 
+        # Free GPU memory used by the model and hooks before running metrics
+        import gc
+        import torch
+        self.extractor.model.cpu()
+        for l in self.extractor.layer_names:
+            self.extractor.features[l] = []
+        del self.extractor.model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
         all_results = {}
 
         # CASE 1: Aggregated (Concatenate or Stack)

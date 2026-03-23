@@ -26,6 +26,11 @@ DATA_DIR=""
 NON_INTERACTIVE=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MIN_DISK_SPACE_GB=10
+ENV_PREFIX=""
+PIP_CACHE_DIR=""
+PIP_TMP_DIR=""
+ACTIVATE_SUFFIX=""
+CLEAN_CACHE=false
 
 # ============================================================================
 # Color Support Detection
@@ -389,6 +394,10 @@ ${BOLD}Options:${NC}
   --cpu-only            Install CPU-only PyTorch (no CUDA)
   --data-dir DIR        Set data directory (default: ~/bbscore_data)
   --env-name NAME       Set environment name (default: bbscore)
+  --env-prefix DIR      Create conda env at prefix path (default: named env)
+  --pip-dirs DIR        Redirect pip cache/tmp under DIR (e.g. project dir)
+  --activate-suffix S   Activation script suffix (e.g. peggyo -> activate_bbscore_peggyo.sh)
+  --clean               Remove .pip_cache at end (keeps .pip_tmp cleaned by default)
   --no-conda            Use pip/venv instead of conda
   --help, -h            Show this help message
 
@@ -436,6 +445,35 @@ while [[ $# -gt 0 ]]; do
             ENV_NAME="$2"
             shift 2
             ;;
+        --env-prefix)
+            if [ -z "$2" ] || [[ "$2" == --* ]]; then
+                print_error "--env-prefix requires a directory path"
+                exit 1
+            fi
+            ENV_PREFIX="$2"
+            shift 2
+            ;;
+        --pip-dirs)
+            if [ -z "$2" ] || [[ "$2" == --* ]]; then
+                print_error "--pip-dirs requires a directory path"
+                exit 1
+            fi
+            PIP_CACHE_DIR="$2/.pip_cache"
+            PIP_TMP_DIR="$2/.pip_tmp"
+            shift 2
+            ;;
+        --activate-suffix)
+            if [ -z "$2" ] || [[ "$2" == --* ]]; then
+                print_error "--activate-suffix requires a value"
+                exit 1
+            fi
+            ACTIVATE_SUFFIX="$2"
+            shift 2
+            ;;
+        --clean)
+            CLEAN_CACHE=true
+            shift
+            ;;
         --quick|--non-interactive)
             NON_INTERACTIVE=true
             shift
@@ -470,7 +508,7 @@ fi
 # Detect GPU
 HAS_NVIDIA_GPU=false
 if command_exists nvidia-smi; then
-    if nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | grep -qi nvidia; then
+    if nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -q .; then
         HAS_NVIDIA_GPU=true
     fi
 fi
@@ -615,8 +653,9 @@ AVAILABLE_SPACE=$(get_available_disk_space "$HOME")
 print_info "Available disk space: ${AVAILABLE_SPACE}GB"
 
 if [ "$AVAILABLE_SPACE" -lt "$MIN_DISK_SPACE_GB" ] 2>/dev/null; then
-    print_warning "Low disk space! At least ${MIN_DISK_SPACE_GB}GB recommended."
-    if ! prompt_yes_no "Continue anyway?" "n"; then
+    print_warning "Low disk space in home! At least ${MIN_DISK_SPACE_GB}GB recommended."
+    print_info "Pip cache/tmp will be redirected to project directory automatically."
+    if ! prompt_yes_no "Continue anyway?" "y"; then
         exit 1
     fi
 fi
@@ -763,34 +802,73 @@ if [ "$SKIP_CONDA" = true ] && [ -z "$CONDA_CMD" ]; then
 
     print_success "Virtual environment activated"
 else
-    if conda env list 2>/dev/null | grep -q "^$ENV_NAME "; then
-        print_warning "Environment '$ENV_NAME' already exists"
-        if prompt_yes_no "Remove and recreate?" "n"; then
-            print_info "Removing existing environment..."
-            $CONDA_CMD env remove -n "$ENV_NAME" -y
-        else
-            print_info "Using existing environment"
+    if [ -n "$ENV_PREFIX" ]; then
+        # Prefix-based conda env (e.g. for project-local envs on shared servers)
+        ENV_PREFIX="${ENV_PREFIX/#\~/$HOME}"
+        if [[ "$ENV_PREFIX" != /* ]]; then
+            ENV_PREFIX="$SCRIPT_DIR/$ENV_PREFIX"
         fi
+
+        if [ -d "$ENV_PREFIX" ]; then
+            print_warning "Environment exists at $ENV_PREFIX"
+            if prompt_yes_no "Remove and recreate?" "n"; then
+                print_info "Removing existing environment..."
+                rm -rf "$ENV_PREFIX"
+            else
+                print_info "Using existing environment"
+            fi
+        fi
+
+        if [ ! -d "$ENV_PREFIX" ]; then
+            print_info "Creating environment at '$ENV_PREFIX' with Python $PYTHON_VERSION..."
+            $CONDA_CMD create -p "$ENV_PREFIX" python="$PYTHON_VERSION" -y
+        fi
+
+        print_info "Activating environment..."
+        source "$(conda info --base)/etc/profile.d/conda.sh"
+        conda activate "$ENV_PREFIX"
+        ENV_PATH="$ENV_PREFIX"
+        ENV_PIP="$ENV_PATH/bin/pip"
+        ENV_PYTHON="$ENV_PATH/bin/python"
+    else
+        # Named conda env (default)
+        if conda env list 2>/dev/null | grep -q "^$ENV_NAME "; then
+            print_warning "Environment '$ENV_NAME' already exists"
+            if prompt_yes_no "Remove and recreate?" "n"; then
+                print_info "Removing existing environment..."
+                $CONDA_CMD env remove -n "$ENV_NAME" -y
+            else
+                print_info "Using existing environment"
+            fi
+        fi
+
+        if ! conda env list 2>/dev/null | grep -q "^$ENV_NAME "; then
+            print_info "Creating environment '$ENV_NAME' with Python $PYTHON_VERSION..."
+            $CONDA_CMD create -n "$ENV_NAME" python="$PYTHON_VERSION" -y
+        fi
+
+        print_info "Activating environment..."
+        CONDA_BASE=$(conda info --base)
+        ENV_PATH="$CONDA_BASE/envs/$ENV_NAME"
+        source "$CONDA_BASE/etc/profile.d/conda.sh"
+        conda activate "$ENV_NAME"
+
+        # IMPORTANT: Use explicit paths to ensure we use the correct environment
+        ENV_PIP="$ENV_PATH/bin/pip"
+        ENV_PYTHON="$ENV_PATH/bin/python"
     fi
-
-    if ! conda env list 2>/dev/null | grep -q "^$ENV_NAME "; then
-        print_info "Creating environment '$ENV_NAME' with Python $PYTHON_VERSION..."
-        $CONDA_CMD create -n "$ENV_NAME" python="$PYTHON_VERSION" -y
-    fi
-
-    print_info "Activating environment..."
-    CONDA_BASE=$(conda info --base)
-    ENV_PATH="$CONDA_BASE/envs/$ENV_NAME"
-    source "$CONDA_BASE/etc/profile.d/conda.sh"
-    conda activate "$ENV_NAME"
-
-    # IMPORTANT: Use explicit paths to ensure we use the correct environment
-    ENV_PIP="$ENV_PATH/bin/pip"
-    ENV_PYTHON="$ENV_PATH/bin/python"
 fi
 
 print_success "Environment active"
 print_info "Python: $($ENV_PYTHON --version)"
+
+# Always redirect pip cache/tmp to project directory to avoid clutter in home
+PIP_CACHE_DIR="${PIP_CACHE_DIR:-$SCRIPT_DIR/.pip_cache}"
+PIP_TMP_DIR="${PIP_TMP_DIR:-$SCRIPT_DIR/.pip_tmp}"
+mkdir -p "$PIP_CACHE_DIR" "$PIP_TMP_DIR"
+export PIP_CACHE_DIR
+export TMPDIR="$PIP_TMP_DIR"
+print_info "Using pip cache: $PIP_CACHE_DIR"
 
 print_info "Upgrading pip..."
 $ENV_PIP install --upgrade pip --quiet
@@ -824,13 +902,29 @@ elif [ "$OS" = "macos" ]; then
 else
     if [ "$HAS_NVIDIA_GPU" = true ]; then
         PYTORCH_CUDA="121"
+
+        # Check driver-supported CUDA version via nvidia-smi (critical when nvcc not installed)
+        DRIVER_CUDA=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
+        if [ -n "$DRIVER_CUDA" ]; then
+            DRIVER_CUDA_MAJOR=$(echo "$DRIVER_CUDA" | cut -d. -f1)
+            DRIVER_CUDA_MINOR=$(echo "$DRIVER_CUDA" | cut -d. -f2)
+            if [ "$DRIVER_CUDA_MAJOR" -lt 12 ] 2>/dev/null; then
+                PYTORCH_CUDA="118"
+                if [ "$DRIVER_CUDA_MAJOR" -eq 11 ] && [ "$DRIVER_CUDA_MINOR" -lt 8 ] 2>/dev/null; then
+                    print_warning "Driver supports CUDA $DRIVER_CUDA. Using cu118 wheels (forward-compatible)."
+                fi
+            fi
+        fi
+
+        # Also check nvcc if available (can override)
         if command_exists nvcc; then
-            CUDA_TOOLKIT_VERSION=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' | head -1)
+            CUDA_TOOLKIT_VERSION=$(nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
             if [ -n "$CUDA_TOOLKIT_VERSION" ]; then
                 CUDA_MAJOR=$(echo "$CUDA_TOOLKIT_VERSION" | cut -d. -f1)
                 [ "$CUDA_MAJOR" -lt 12 ] 2>/dev/null && PYTORCH_CUDA="118"
             fi
         fi
+
         install_pytorch_cuda "$PYTORCH_CUDA"
     else
         install_pytorch_cpu
@@ -862,15 +956,50 @@ print_header "Installing Dependencies"
 
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
 if [ -f "$REQUIREMENTS_FILE" ]; then
+    # Detect glibc version to cap packages that lack old-glibc wheels
+    GLIBC_VERSION=$(ldd --version 2>&1 | head -1 | grep -oP '[0-9]+\.[0-9]+$' || echo "")
+    GLIBC_MAJOR=$(echo "$GLIBC_VERSION" | cut -d. -f1)
+    GLIBC_MINOR=$(echo "$GLIBC_VERSION" | cut -d. -f2)
+    OLD_GLIBC=false
+    if [ -n "$GLIBC_MAJOR" ] && [ "$GLIBC_MAJOR" -eq 2 ] 2>/dev/null && [ "$GLIBC_MINOR" -lt 28 ] 2>/dev/null; then
+        OLD_GLIBC=true
+        print_info "Detected glibc $GLIBC_VERSION (< 2.28); will cap packages to versions with compatible wheels"
+    fi
+
+    # Pre-install packages that need version caps on older glibc to avoid source build failures
+    if [ "$OLD_GLIBC" = true ]; then
+        if grep -E "^av([[:space:]]*[=><~].*)?$" "$REQUIREMENTS_FILE" >/dev/null && ! $ENV_PIP show av 2>/dev/null | grep -q "^Version:"; then
+            print_info "Pre-installing av<13 (newer versions lack manylinux_2_17 wheels)..."
+            $ENV_PIP install "av<13" --only-binary=av --quiet || true
+        fi
+        if grep -E "^wandb([[:space:]]*[=><~].*)?$" "$REQUIREMENTS_FILE" >/dev/null && ! $ENV_PIP show wandb 2>/dev/null | grep -q "^Version:"; then
+            print_info "Pre-installing wandb<0.19 (newer versions lack manylinux_2_17 wheels)..."
+            $ENV_PIP install "wandb<0.19" --quiet || true
+        fi
+        if grep -E "^h5py([[:space:]]*[=><~].*)?$" "$REQUIREMENTS_FILE" >/dev/null && ! $ENV_PIP show h5py 2>/dev/null | grep -q "^Version:"; then
+            print_info "Pre-installing h5py<3.12 (newer versions lack manylinux_2_17 wheels)..."
+            $ENV_PIP install "h5py<3.12" --quiet || true
+        fi
+    fi
+
     # Step 4a: Install core packages (non-git dependencies) first
     # This ensures basic dependencies are installed even if git packages fail
+    # Filter out: torch/torchvision/torchaudio (already installed with correct CUDA index),
+    #             decord/decord2 (handled separately), av/wandb/h5py (pre-installed with version caps)
     print_info "Installing core packages..."
-    grep -v "^decord" "$REQUIREMENTS_FILE" | grep -v "@ git+" | $ENV_PIP install -r /dev/stdin && \
+    grep -v "@ git+" "$REQUIREMENTS_FILE" | \
+        grep -E -v "^(torch|torchvision|torchaudio|av|decord|decord2|wandb|h5py)([[:space:]]*[=><~].*)?$" | \
+        $ENV_PIP install -r /dev/stdin && \
         print_success "Core packages installed" || \
         print_warning "Some core packages failed"
 
     # Step 4b: Install git-based packages one by one (more resilient to failures)
     print_info "Installing git-based packages (this may take a while)..."
+
+    # Ensure git safe.directory allows pip to clone into temp dirs on network volumes
+    if ! git config --global --get-all safe.directory 2>/dev/null | grep -q '^\*$'; then
+        git config --global --add safe.directory '*'
+    fi
 
     GIT_PACKAGES=$(grep "@ git+" "$REQUIREMENTS_FILE")
     GIT_SUCCESS=0
@@ -903,20 +1032,20 @@ fi
 print_header "Installing Decord (Video Library)"
 
 install_decord() {
-    # Try conda first (works on Linux x86_64)
-    if [ -n "$CONDA_CMD" ] && [ "$SKIP_CONDA" != true ]; then
+    # Try pip first to avoid conda/pip dependency conflicts (conda pulls conflicting numpy/ffmpeg)
+    print_info "Trying pip..."
+    if $ENV_PIP install decord 2>/dev/null; then
+        print_success "Decord installed via pip"
+        return 0
+    fi
+
+    # Conda fallback only for named envs (prefix envs mix badly with conda installs)
+    if [ -n "$CONDA_CMD" ] && [ "$SKIP_CONDA" != true ] && [ -z "$ENV_PREFIX" ]; then
         print_info "Trying conda-forge..."
         if $CONDA_CMD install -c conda-forge decord -y 2>/dev/null; then
             print_success "Decord installed via conda"
             return 0
         fi
-    fi
-
-    # Try pip (works on some platforms)
-    print_info "Trying pip..."
-    if $ENV_PIP install decord 2>/dev/null; then
-        print_success "Decord installed via pip"
-        return 0
     fi
 
     # Build from source (needed for macOS ARM64 and some Linux)
@@ -960,8 +1089,8 @@ install_decord() {
         fi
     fi
 
-    # Clone and build decord
-    local temp_dir="/tmp/decord_build_$$"
+    # Clone and build decord (use TMPDIR when redirected to project dir for low home space)
+    local temp_dir="${TMPDIR:-/tmp}/decord_build_$$"
     mkdir -p "$temp_dir"
 
     print_info "Cloning decord repository..."
@@ -1040,7 +1169,7 @@ fi
 
 print_header "Configuring Environment"
 
-DATA_DIR="${DATA_DIR:-$HOME/bbscore_data}"
+DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/bbscore_data}"
 DATA_DIR="${DATA_DIR/#\~/$HOME}"
 
 if ! mkdir -p "$DATA_DIR" 2>/dev/null; then
@@ -1088,17 +1217,33 @@ fi
 
 export SCIKIT_LEARN_DATA="$DATA_DIR"
 
-# Create activation script
-ACTIVATE_SCRIPT="$SCRIPT_DIR/activate_bbscore.sh"
+# Create server-specific activation script (leave upstream activate_bbscore.sh untouched)
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "local")
+ACTIVATE_SUFFIX="${ACTIVATE_SUFFIX:-$HOSTNAME_SHORT}"
+ACTIVATE_SCRIPT="$SCRIPT_DIR/activate_bbscore_${ACTIVATE_SUFFIX}.sh"
+
 cat > "$ACTIVATE_SCRIPT" << 'SCRIPT_HEADER'
 #!/bin/bash
-# Activate BBScore environment
-# Usage: source activate_bbscore.sh
+# Activate BBScore environment (server-specific)
+# Usage: source activate_bbscore_SUFFIX.sh
 
 SCRIPT_HEADER
 
 if [ -n "$CONDA_CMD" ] && [ "$SKIP_CONDA" != true ]; then
-    cat >> "$ACTIVATE_SCRIPT" << EOF
+    if [ -n "$ENV_PREFIX" ]; then
+        cat >> "$ACTIVATE_SCRIPT" << EOF
+SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+ENV_PATH="$ENV_PATH"
+if command -v conda &> /dev/null; then
+    source "\$(conda info --base)/etc/profile.d/conda.sh"
+    conda activate "\$ENV_PATH"
+else
+    echo "Error: conda not found"
+    return 1
+fi
+EOF
+    else
+        cat >> "$ACTIVATE_SCRIPT" << EOF
 if command -v conda &> /dev/null; then
     source "\$(conda info --base)/etc/profile.d/conda.sh"
     conda activate $ENV_NAME
@@ -1107,6 +1252,7 @@ else
     return 1
 fi
 EOF
+    fi
 else
     cat >> "$ACTIVATE_SCRIPT" << 'EOF'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1114,9 +1260,16 @@ source "$SCRIPT_DIR/.venv/bin/activate"
 EOF
 fi
 
-cat >> "$ACTIVATE_SCRIPT" << 'EOF'
+cat >> "$ACTIVATE_SCRIPT" << 'ACTIVATE_TAIL'
 
-export SCIKIT_LEARN_DATA="$DATA_DIR"
+export SCIKIT_LEARN_DATA="DATA_DIR_PLACEHOLDER"
+
+# GPU selection: default to GPU 0 to reserve larger GPUs for heavy tasks
+# Override before sourcing: export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+
+# Disable torch.compile/inductor on older drivers (avoids Triton PTX errors)
+export TORCHDYNAMO_DISABLE=1
 
 PYTHON_PATH=$(which python)
 echo "BBScore environment activated!"
@@ -1125,12 +1278,13 @@ echo "Data: $SCIKIT_LEARN_DATA"
 echo ""
 echo "Quick start:"
 echo "  $PYTHON_PATH run.py --model resnet18 --layer layer4 --benchmark OnlineTVSDV1 --metric ridge"
-EOF
-# Replace $DATA_DIR placeholder with actual value
-sed -i.bak "s|\$DATA_DIR|$DATA_DIR|g" "$ACTIVATE_SCRIPT" && rm -f "$ACTIVATE_SCRIPT.bak"
+ACTIVATE_TAIL
+
+# Replace placeholders with actual values
+sed -i.bak "s|DATA_DIR_PLACEHOLDER|$DATA_DIR|g" "$ACTIVATE_SCRIPT" && rm -f "$ACTIVATE_SCRIPT.bak"
 
 chmod +x "$ACTIVATE_SCRIPT"
-print_success "Created activate_bbscore.sh"
+print_success "Created $(basename "$ACTIVATE_SCRIPT")"
 
 # ============================================================================
 # Step 6: Verify Key Imports
@@ -1185,6 +1339,20 @@ else
 fi
 
 # ============================================================================
+# Step 8: Cleanup temp dirs
+# ============================================================================
+
+if [ -d "$SCRIPT_DIR/.pip_tmp" ]; then
+    rm -rf "$SCRIPT_DIR/.pip_tmp"
+    print_success "Cleaned up pip temp directory"
+fi
+
+if [ "$CLEAN_CACHE" = true ] && [ -d "$SCRIPT_DIR/.pip_cache" ]; then
+    rm -rf "$SCRIPT_DIR/.pip_cache"
+    print_success "Cleaned up pip cache (--clean)"
+fi
+
+# ============================================================================
 # Done!
 # ============================================================================
 
@@ -1205,8 +1373,8 @@ echo ""
 echo "To get started:"
 echo ""
 echo -e "  ${CYAN}1.${NC} Activate the environment:"
-echo -e "     ${GREEN}source activate_bbscore.sh${NC}"
-[ -n "$CONDA_CMD" ] && [ "$SKIP_CONDA" != true ] && \
+echo -e "     ${GREEN}source activate_bbscore_${ACTIVATE_SUFFIX}.sh${NC}"
+[ -n "$CONDA_CMD" ] && [ "$SKIP_CONDA" != true ] && [ -z "$ENV_PREFIX" ] && \
     echo -e "     or: ${GREEN}conda activate $ENV_NAME${NC}"
 echo ""
 echo -e "  ${CYAN}2.${NC} Run a quick test:"

@@ -9,18 +9,26 @@ from sklearn.model_selection import train_test_split, KFold
 from .base import BaseMetric
 from .utils import run_kfold_cv, run_kfold_cv_chunked, run_eval_chunked, run_eval, pearson_correlation_scorer
 # Import TorchRidge from utils
-from .utils import TorchRidge, TorchRidgeCV, TorchElasticNetCV, TorchConstrainedRidgeCV, TorchBlockRidgeCV
+from .utils import TorchRidge, TorchRidgeCV, TorchElasticNetCV, TorchConstrainedRidgeCV, TorchBlockRidgeCV, TorchElasticNetCV_float32, TorchChunkedKernelRidgeCV
 
 
 try:
+    # cuml.accel (sklearn monkey-patching) was introduced in cuml 25.x.
+    # cuml 24.x only exposes individual estimators like cuml.linear_model.Ridge.
+    # We attempt accel first; on 24.x it will raise ModuleNotFoundError and we
+    # fall back gracefully — our TorchRidgeCV / TorchChunkedKernelRidgeCV
+    # already provide full GPU acceleration for the ridge path.
     import cuml.accel
     cuml.accel.install()
-except Exception:  # pragma: no cover – silently fall back to sklearn
-    print(
-        "cuML not installed, falling back to scikit‑learn.\n"
-        "cuML can speed up linear probes ~50× on GPU; install via:"
-        " https://docs.rapids.ai/api/cuml/stable/"
-    )
+    print("cuML accel installed (sklearn calls accelerated on GPU).")
+except ModuleNotFoundError:
+    # cuml 24.x: accel submodule absent — use direct cuml estimators where needed.
+    try:
+        import cuml  # noqa: F401 — confirms cuml itself is present
+    except ImportError:
+        pass  # no cuml at all; TorchRidgeCV / TorchChunkedKernelRidgeCV handle GPU
+except Exception:
+    pass  # any other cuml init error — fall through silently
 
 
 class RidgeMetric(BaseMetric):
@@ -31,14 +39,14 @@ class RidgeMetric(BaseMetric):
             0.1, 1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10
         ],
         ceiling: Optional[float] = None,
-        mode: Optional[str] = "sklearn",
+        mode: Optional[str] = None,
         subsample_features_for_alpha: Optional[int] = None,
     ):
         """
         Args:
             alpha_options: List of alpha values to try during cross-validation.
             ceiling: Optional ceiling value for score normalization.
-            mode: Either "sklearn" or "torch" for the backend.
+            mode: Backend - "torch" (GPU), "sklearn" (CPU), or None (auto: torch if CUDA else sklearn).
             subsample_features_for_alpha: If set, use a random subset of this many
                 features to find the optimal alpha via RidgeCV, then train the final
                 model with all features using Ridge(alpha=best_alpha). This speeds up
@@ -48,7 +56,13 @@ class RidgeMetric(BaseMetric):
         """
         super().__init__(ceiling)
         self.alpha_options = alpha_options
-        self.mode = mode
+        # Auto-select GPU backend when mode is None
+        if mode is None:
+            self.mode = "torch" if torch.cuda.is_available() else "sklearn"
+            if self.mode == "torch":
+                print("Ridge: using GPU (TorchRidge backend)")
+        else:
+            self.mode = mode
         self.subsample_features_for_alpha = subsample_features_for_alpha
 
     def _find_best_alpha_subsampled(
@@ -129,23 +143,55 @@ class RidgeMetric(BaseMetric):
                     return RidgeCV(alphas=self.alpha_options,
                                    store_cv_results=True, alpha_per_target=True)
         else:
-            X_train_param, X_val_param, y_train_param, y_val_param = train_test_split(
-                source, target, test_size=0.1, random_state=42)
-            best_alpha = None
-            best_score = -np.inf
-            for alpha in self.alpha_options:
-                model = TorchRidge(alpha=alpha)
-                model.fit(X_train_param, y_train_param)
-                preds_val = model.predict(X_val_param)
-                if isinstance(preds_val, torch.Tensor):
-                    preds_val = preds_val.cpu().numpy()
-                score_pearson = np.array([r2_score(
-                    y_val_param[:, i], preds_val[:, i]) for i in range(y_val_param.shape[1])])
-                if score_pearson.mean() > best_score:
-                    best_score = score_pearson.mean()
-                    best_alpha = alpha
+            # "torch" mode: estimate peak VRAM and fall back to sklearn if insufficient
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            use_torch = device == "cuda"
 
-            def model_factory(): return TorchRidge(alpha=best_alpha)
+            if use_torch:
+                N, D = source.shape[0], source.shape[1]
+                # Peak VRAM estimate (bytes, float32):
+                #   Always: X_full (N*D*4) + y_full (N*T*4)
+                #   Dual (D>N): fancy-index slicing forces a contiguous copy of X_train
+                #     (0.9*N rows), so peak during K_train = X_full + X_train_copy + K_train
+                #     Then during K_full refit: X_full + K_full (X_train copy freed)
+                #   Primal (N>=D): XtX (D*D*4) + XtY (D*T*4)
+                T = target.shape[1]
+                x_bytes = N * D * 4
+                y_bytes = N * T * 4
+                if D > N:
+                    n_tr = int(0.9 * N)
+                    # Peak occurs when X_full + X_train_contiguous_copy + K_train all live
+                    # simultaneously (fancy-index gather forces a contiguous copy)
+                    x_train_copy_bytes = n_tr * D * 4
+                    k_train_bytes = n_tr * n_tr * 4
+                    k_full_bytes = N * N * 4
+                    peak_bytes = x_bytes + y_bytes + x_train_copy_bytes + max(k_train_bytes, k_full_bytes)
+                else:
+                    # primal solver: keep X_full + XtX + XtY
+                    peak_bytes = x_bytes + y_bytes + D * D * 4 + D * T * 4
+
+                if torch.cuda.is_available():
+                    free_bytes, _ = torch.cuda.mem_get_info(0)
+                    print(f"Ridge: peak VRAM estimate {peak_bytes/1e9:.1f} GB, "
+                          f"available {free_bytes/1e9:.1f} GB")
+                    if peak_bytes > free_bytes * 0.85:
+                        use_torch = False
+                        print("Ridge: TorchRidgeCV insufficient VRAM → switching to chunked kernel solver.")
+
+            if use_torch:
+                def model_factory():
+                    return TorchRidgeCV(self.alpha_options, device=device)
+            elif device == "cuda":
+                # TorchRidgeCV would OOM (D×D or X_full too large) but CUDA is available.
+                # TorchChunkedKernelRidgeCV builds K = X@X.T (N×N) row-by-row without
+                # ever loading full X to GPU, keeping peak VRAM ~2-3 GB for D=75k.
+                print("Ridge: using chunked kernel (dual) GPU solver (TorchChunkedKernelRidgeCV).")
+                def model_factory():
+                    return TorchChunkedKernelRidgeCV(self.alpha_options, device=device)
+            else:
+                def model_factory():
+                    return RidgeCV(alphas=self.alpha_options,
+                                   store_cv_results=True, alpha_per_target=True)
 
         if test_source is None:
             return run_kfold_cv(model_factory, source, target, scoring_funcs, stratify_on=stratify_on)

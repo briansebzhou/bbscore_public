@@ -40,6 +40,7 @@ MODEL_MODULES = [
     "resnet_lstm",
     "resnext101wsl",
     "random_models",
+    "retina_cnn",
     "robust_models",
     "s3d_text_video",
     "sam",

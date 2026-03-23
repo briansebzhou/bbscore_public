@@ -3,10 +3,9 @@
 BBScore is a framework for benchmarking deep learning models against neural (fMRI, electrophysiology) and behavioral datasets. It handles model loading, stimulus preprocessing, feature extraction, and comparison with biological data.
 
 - **Simple Notebook For Loading Data and Plotting**
-  [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/14T5IuhZJ6PZaOvhpUMH-uIFGrzyVb7Wt?usp=sharing)
-
+[Open in Colab](https://colab.research.google.com/drive/14T5IuhZJ6PZaOvhpUMH-uIFGrzyVb7Wt?usp=sharing)
 - **Data Analysis Notebook (By Josh Wilson)**
-  [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Hwkro4UnmqsXWso6MEz25P1b3a0RWpbg?usp=sharing)
+[Open in Colab](https://colab.research.google.com/drive/1Hwkro4UnmqsXWso6MEz25P1b3a0RWpbg?usp=sharing)
 
 ## Quick Start
 
@@ -19,6 +18,7 @@ python check_system.py --quick
 ```
 
 For a detailed check with a specific configuration:
+
 ```bash
 python check_system.py --model resnet50 --benchmark TVSDV1 --metric ridge
 ```
@@ -34,23 +34,27 @@ chmod +x install.sh
 ```
 
 The installer features:
+
 - **Interactive setup wizard** with arrow-key navigation
 - **Tab completion** for directory paths
 - **Auto-detection** of GPU (NVIDIA CUDA / Apple Silicon MPS)
 - **Automatic conda/miniconda** installation if needed
 
 **Quick install** (skip wizard, use defaults):
+
 ```bash
 ./install.sh --quick              # Auto-detect GPU
 ./install.sh --quick --cpu-only   # Force CPU-only PyTorch
 ```
 
 **All options:**
+
 ```bash
 ./install.sh --help
 ```
 
 Or install manually:
+
 ```bash
 # Create conda environment
 conda create -n bbscore python=3.10 -y
@@ -69,6 +73,7 @@ pip install -r requirements.txt
 ### 3. Activate the Environment
 
 If you used the install script:
+
 ```bash
 # Use the generated activation script
 source activate_bbscore.sh
@@ -80,6 +85,7 @@ conda activate bbscore
 The install script automatically configures the `SCIKIT_LEARN_DATA` environment variable.
 
 **Manual setup** (if not using install script):
+
 ```bash
 # Required: Set data directory (50GB+ free space recommended)
 export SCIKIT_LEARN_DATA="/path/to/your/data/bbscore_data"
@@ -103,16 +109,19 @@ python run.py --model resnet50 --layer _orig_mod.resnet.encoder.stages.3 --bench
 
 ## For Students: Step-by-Step Guide
 
-### What You Need
+### **What You Need**
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| RAM | 8 GB | 16+ GB |
-| GPU | None (CPU works) | 4+ GB VRAM |
-| Disk | 50 GB | 100+ GB |
-| Python | 3.9+ | 3.11 |
+
+| Resource | Minimum          | Recommended |
+| -------- | ---------------- | ----------- |
+| RAM      | 8 GB             | 16+ GB      |
+| GPU      | None (CPU works) | 4+ GB VRAM  |
+| Disk     | 50 GB            | 100+ GB     |
+| Python   | 3.9+             | 3.11        |
+
 
 **No GPU?** Use:
+
 - `ridge` metric instead of `online_linear_regressor`
 - Smaller models (`resnet18`, `efficientnet_b0`)
 - Online benchmarks (`OnlineTVSDV1`, `OnlineTVSDV4`)
@@ -127,15 +136,18 @@ python validate.py
 
 This runs three tiers of checks:
 
-| Tier | What it tests | Time |
-|------|---------------|------|
-| **1. Environment** | Python version, dependencies, registries, hardware (RAM, GPU, disk) | ~30s |
-| **2. Model Inference** | Loads ResNet-18 (vision) and GPT-2 Small (language), runs forward passes | ~2-3 min |
+
+| Tier                   | What it tests                                                                                              | Time                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| **1. Environment**     | Python version, dependencies, registries, hardware (RAM, GPU, disk)                                        | ~30s                                 |
+| **2. Model Inference** | Loads ResNet-18 (vision) and GPT-2 Small (language), runs forward passes                                   | ~2-3 min                             |
 | **3. Data & Pipeline** | Downloads NSD and LeBel2023 datasets, validates data shapes, runs ridge and temporal RSA on synthetic data | ~5-30 min (first run downloads data) |
+
 
 **All three tiers must pass before you start your project.**
 
 You can run individual tiers to isolate issues:
+
 ```bash
 python validate.py --tier 1     # Environment only
 python validate.py --tier 2     # Environment + model inference
@@ -143,6 +155,7 @@ python validate.py --tier 3     # All tiers (default)
 ```
 
 Expected output on a working setup:
+
 ```
   Validation Summary
   PASS  Tier 1: Environment & Dependencies  (1s)
@@ -156,16 +169,18 @@ Expected output on a working setup:
 
 Not all metrics work with all benchmarks. The framework validates this automatically, but here is the reference:
 
-| Benchmark Type | Compatible Metrics |
-|---|---|
+
+| Benchmark Type                                 | Compatible Metrics                                                                                                                                                |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **NSD, TVSD, BMD, LeBel2023** (offline neural) | `ridge`, `torch_ridge`, `pls`, `rsa`, `temporal_rsa`, `versa`, `bidirectional`, `one_to_one`, `soft_matching`, `semi_matching`, `temporal_ridge`, `inverse_ridge` |
-| **LeBel2023TR** (TR-level language) | `ridge`, `temporal_rsa` |
-| **LeBel2023Audio** (audio average) | `ridge`, `torch_ridge`, `pls`, `rsa`, `temporal_rsa`, `versa`, `bidirectional`, `one_to_one`, `soft_matching`, `semi_matching`, `temporal_ridge`, `inverse_ridge` |
-| **LeBel2023AudioTR** (TR-level audio) | `ridge`, `temporal_rsa` |
-| **OnlineTVSD** | `online_linear_regressor` |
-| **OnlinePhysionContact** | `physion_contact_prediction`, `physion_contact_detection` |
-| **OnlinePhysionPlacement** | `physion_placement_prediction`, `physion_placement_detection` |
-| **(Augmented)SSV2** | `online_linear_classifier`, `online_transformer_classifier` |
+| **LeBel2023TR** (TR-level language)            | `ridge`, `temporal_rsa`                                                                                                                                           |
+| **LeBel2023Audio** (audio average)             | `ridge`, `torch_ridge`, `pls`, `rsa`, `temporal_rsa`, `versa`, `bidirectional`, `one_to_one`, `soft_matching`, `semi_matching`, `temporal_ridge`, `inverse_ridge` |
+| **LeBel2023AudioTR** (TR-level audio)          | `ridge`, `temporal_rsa`                                                                                                                                           |
+| **OnlineTVSD**                                 | `online_linear_regressor`                                                                                                                                         |
+| **OnlinePhysionContact**                       | `physion_contact_prediction`, `physion_contact_detection`                                                                                                         |
+| **OnlinePhysionPlacement**                     | `physion_placement_prediction`, `physion_placement_detection`                                                                                                     |
+| **(Augmented)SSV2**                            | `online_linear_classifier`, `online_transformer_classifier`                                                                                                       |
+
 
 Using an incompatible metric will print a warning with the list of compatible options.
 
@@ -174,14 +189,13 @@ Using an incompatible metric will print a warning with the list of compatible op
 ### Recommended Workflow
 
 1. **Start with small experiments:**
-   ```bash
+  ```bash
    python run.py --model resnet18 --layer _orig_mod.resnet.encoder.stages.3 --benchmark NSDV1Shared --metric ridge
-   ```
-
+  ```
 2. **Scale up gradually:**
-   ```bash
+  ```bash
    python run.py --model dinov2_base --layer blocks.11 --benchmark NSDV1Shared --metric ridge
-   ```
+  ```
 
 ---
 
@@ -189,50 +203,58 @@ Using an incompatible metric will print a warning with the list of compatible op
 
 ### Benchmark Examples
 
-| Benchmark | Type | Memory | Description |
-|-----------|------|--------|-------------|
-| `BMD_V1` | Video | Low | Macaque V1 neural responses |
-| `NSDV1Shared` | Image | Low | Human fMRI V1 (NSD dataset) |
-| `TVSDV4` | Video | High | Macaque V4 neural responses |
-| `SSV2Benchmark` | Video | High | Something-Something-V2 |
-| `LeBel2023{UTS01-08}` | Text/fMRI | Low | Language comprehension fMRI |
-| `LeBel2023TR{UTS01-08}` | Text/fMRI | Low | TR-level language encoding |
-| `LeBel2023Audio{UTS01-08}` | Audio/fMRI | Low | Audio comprehension fMRI |
-| `LeBel2023AudioTR{UTS01-08}` | Audio/fMRI | Low | TR-level audio encoding |
+
+| Benchmark                    | Type       | Memory | Description                 |
+| ---------------------------- | ---------- | ------ | --------------------------- |
+| `BMD_V1`                     | Video      | Low    | Macaque V1 neural responses |
+| `NSDV1Shared`                | Image      | Low    | Human fMRI V1 (NSD dataset) |
+| `TVSDV4`                     | Video      | High   | Macaque V4 neural responses |
+| `SSV2Benchmark`              | Video      | High   | Something-Something-V2      |
+| `LeBel2023{UTS01-08}`        | Text/fMRI  | Low    | Language comprehension fMRI |
+| `LeBel2023TR{UTS01-08}`      | Text/fMRI  | Low    | TR-level language encoding  |
+| `LeBel2023Audio{UTS01-08}`   | Audio/fMRI | Low    | Audio comprehension fMRI    |
+| `LeBel2023AudioTR{UTS01-08}` | Audio/fMRI | Low    | TR-level audio encoding     |
+
 
 ### Models (Examples)
 
-| Model | Parameters | VRAM | Type |
-|-------|------------|------|------|
-| `resnet18` | 11M | 2 GB | Image |
-| `resnet50` | 26M | 3 GB | Image |
-| `dinov2_base` | 86M | 4 GB | Image |
-| `dinov2_large` | 304M | 8 GB | Image |
-| `videomae_base` | 87M | 8 GB | Video |
-| `clip_vit_b32` | 151M | 4 GB | Image |
-| `whisper_base` | 74M | 2 GB | Audio |
-| `wav2vec2_base` | 95M | 2 GB | Audio |
-| `hubert_base` | 95M | 2 GB | Audio |
+
+| Model           | Parameters | VRAM | Type  |
+| --------------- | ---------- | ---- | ----- |
+| `resnet18`      | 11M        | 2 GB | Image |
+| `resnet50`      | 26M        | 3 GB | Image |
+| `dinov2_base`   | 86M        | 4 GB | Image |
+| `dinov2_large`  | 304M       | 8 GB | Image |
+| `videomae_base` | 87M        | 8 GB | Video |
+| `clip_vit_b32`  | 151M       | 4 GB | Image |
+| `whisper_base`  | 74M        | 2 GB | Audio |
+| `wav2vec2_base` | 95M        | 2 GB | Audio |
+| `hubert_base`   | 95M        | 2 GB | Audio |
+
 
 ### Metrics
 
-| Metric | GPU Required | Description |
-|--------|--------------|-------------|
-| `ridge` | No | Ridge regression (sklearn) |
+
+| Metric                    | GPU Required                 | Description                                 |
+| ------------------------- | ---------------------------- | ------------------------------------------- |
+| `ridge`                   | No                           | Ridge regression (sklearn)                  |
 | `online_linear_regressor` | Recommended but not required | Online ridge with SGD and L2 regularization |
-| `pls` | No | Partial Least Squares |
-| `rsa` | No | Representational Similarity Analysis |
+| `pls`                     | No                           | Partial Least Squares                       |
+| `rsa`                     | No                           | Representational Similarity Analysis        |
+
 
 ---
 
 ## Command Reference
 
 ### Basic Run
+
 ```bash
 python run.py --model <MODEL> --layer <LAYER> --benchmark <BENCHMARK> --metric <METRIC>
 ```
 
 ### Common Options
+
 ```bash
 --batch-size 8       # Adjust based on your GPU memory
 --device cuda:0      # Specify GPU
@@ -263,6 +285,7 @@ python run.py --model dinov2_large --layer blocks.23 --benchmark NSDV1Shared --m
 ### Finding Layer Names
 
 To see available layer names for any model, print the model architecture:
+
 ```python
 from models import MODEL_REGISTRY
 
@@ -277,6 +300,7 @@ for name, module in model.named_modules():
 ```
 
 ### List Available Options
+
 ```bash
 python check_system.py --list
 ```
@@ -286,6 +310,7 @@ python check_system.py --list
 ## Troubleshooting
 
 ### Out of Memory (GPU)
+
 ```bash
 # Reduce batch size
 python run.py ... --batch-size 2
@@ -295,20 +320,24 @@ python run.py ... --device cpu --metric ridge
 ```
 
 ### No GPU / Installation Issues
+
 ```bash
 # Reinstall with CPU-only PyTorch (smaller download, always works)
 ./install.sh --quick --cpu-only
 ```
 
 ### Out of Memory (RAM)
+
 - Use `Online*` benchmarks instead of standard ones
 - Use smaller models
 
 ### Slow Training
-- Install cuML for 50x faster ridge regression: https://docs.rapids.ai/api/cuml/stable/
+
+- Install cuML for 50x faster ridge regression: [https://docs.rapids.ai/api/cuml/stable/](https://docs.rapids.ai/api/cuml/stable/)
 - Use `--subsample-features-for-alpha 2000` for faster alpha search
 
 ### Dataset Download Issues
+
 - Ensure `SCIKIT_LEARN_DATA` is set to a writable directory
 - Check you have enough disk space
 - Some datasets require AWS credentials (see `data/` folder)
@@ -319,15 +348,18 @@ python run.py ... --device cpu --metric ridge
 
 When using `OnlineLinearRegressor`, you can choose different loss functions:
 
-| Loss Type | Description |
-|-----------|-------------|
-| `mse` | **Default** - Mean squared error with L2 regularization |
-| `correlation` | Pearson correlation loss |
-| `combined` | MSE + correlation (tune `correlation_weight`) |
-| `ccc` | Concordance Correlation Coefficient (combines correlation + scale) |
-| `ccc_mse` | CCC + MSE combined |
+
+| Loss Type     | Description                                                        |
+| ------------- | ------------------------------------------------------------------ |
+| `mse`         | **Default** - Mean squared error with L2 regularization            |
+| `correlation` | Pearson correlation loss                                           |
+| `combined`    | MSE + correlation (tune `correlation_weight`)                      |
+| `ccc`         | Concordance Correlation Coefficient (combines correlation + scale) |
+| `ccc_mse`     | CCC + MSE combined                                                 |
+
 
 **Example:**
+
 ```python
 from metrics import OnlineLinearRegressor
 

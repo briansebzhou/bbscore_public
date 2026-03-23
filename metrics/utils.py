@@ -1619,6 +1619,242 @@ class TorchConstrainedRidgeCV:
         return (X @ self.coef_ + self.intercept_).numpy()
 
 
+class TorchChunkedKernelRidgeCV:
+    """
+    Chunked Dual (Kernel) Ridge solver for fat matrices (D >> N) on low-VRAM GPUs.
+
+    X is kept uncentered in float32 on CPU RAM (no centered copy ever allocated).
+    Centering is applied per-chunk on the GPU using a pinned X_mean (1×D, ~0.4 MB).
+
+    Peak VRAM = K_block (N×N×4B) + 2 × chunk_rows × D × 4B
+    For conv0 (D=75k, N=22k):   1.9 GB + chunk_rows-dependent tile
+    For conv1 (D=104k, N=22k):  1.9 GB + chunk_rows-dependent tile
+    chunk_rows is auto-sized to fill available VRAM minus the K_block reservation.
+
+    The alpha grid search and final solve operate entirely on the small
+    N×N kernel, which is fast even for many alphas.
+    """
+
+    def __init__(self, alphas, device="cuda", val_fraction=0.1, chunk_rows=None):
+        self.alphas = alphas
+        self.device = device
+        self.val_fraction = val_fraction
+        self.chunk_rows = chunk_rows  # None = auto from free VRAM
+        self.best_alpha = None
+        self.coef_ = None   # stored on CPU
+        self.intercept_ = None
+
+    def _auto_chunk_rows(self, n_features, n_samples=None, x_cpu_bytes=0):
+        """
+        Choose chunk_rows respecting BOTH GPU VRAM and system RAM constraints.
+
+        In WSL2, GPU memory is allocated from the same physical DRAM as system
+        RAM, so both budgets must be satisfied simultaneously.
+
+        Peak pressure per tile step:
+          RAM  side: x_cpu_bytes (X stored uncentered) already allocated
+                     + X_left_chunk + X_right_chunk copied to GPU (these pages
+                       remain mapped in RAM until the GPU releases them)
+          VRAM side: K_block (N×N×4B) + X_left_chunk + X_right_chunk
+
+        We compute the max chunk_rows that keeps tile usage within whichever
+        budget is tighter, leaving a 2 GB safety margin in each.
+        """
+        if self.device == "cpu":
+            return 4000
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+            free_ram_bytes = vm.available
+
+            free_vram_bytes, _ = torch.cuda.mem_get_info(0)
+
+            n = n_samples if n_samples is not None else 25000
+            k_block_bytes = n * n * 4  # K_full worst case
+
+            # 2 GB safety margin in each memory space
+            safety = 2 * (1 << 30)
+
+            # Budget for the 2 tiles from each perspective
+            vram_for_tiles = max(free_vram_bytes - k_block_bytes - safety, 0)
+            # RAM budget: X_cpu is already allocated; tiles are additional pressure
+            ram_for_tiles  = max(free_ram_bytes - x_cpu_bytes - safety, 0)
+
+            # Tiles = 2 × chunk_rows × D × 4B; pick the tighter constraint
+            usable = min(vram_for_tiles, ram_for_tiles)
+            usable = max(usable, 256 * (1 << 20))  # floor at 256 MB
+            rows = int(usable / (2 * n_features * 4))
+            capped = max(128, min(rows, n))
+
+            print(f"   [ChunkedKernel] free_RAM={free_ram_bytes/1e9:.1f} GB, "
+                  f"free_VRAM={free_vram_bytes/1e9:.1f} GB, "
+                  f"K_block≈{k_block_bytes/1e9:.1f} GB, "
+                  f"chunk_rows={capped} (tile={2*capped*n_features*4/1e9:.2f} GB)")
+            return capped
+        except Exception:
+            return 500
+
+    def _build_kernel_chunked(self, X_cpu, X_mean_gpu, row_idx, col_idx, n_features, _chunk_rows=None):
+        """
+        Build K[row_idx, :][:, col_idx] entirely in chunks so X is never fully on GPU.
+
+        X_cpu is stored uncentered in float32. X_mean_gpu is subtracted per-chunk
+        on the GPU, so we never allocate a full centered copy in RAM.
+
+        K_block is allocated at its exact output size (n_rows x n_cols).
+        Peak VRAM per step = K_block + X_left_chunk + X_right_chunk.
+        """
+        n_rows = len(row_idx)
+        n_cols = len(col_idx)
+        chunk_rows = _chunk_rows or self.chunk_rows or self._auto_chunk_rows(n_features, n_cols)
+
+        K_block = torch.zeros((n_rows, n_cols), dtype=torch.float32, device=self.device)
+
+        n_i = (n_rows + chunk_rows - 1) // chunk_rows
+        n_j = (n_cols + chunk_rows - 1) // chunk_rows
+        total_blocks = n_i * n_j
+        pbar = tqdm(total=total_blocks, desc="   K_chunked", unit="block")
+
+        for i in range(0, n_rows, chunk_rows):
+            i_end = min(i + chunk_rows, n_rows)
+            X_left = X_cpu[row_idx[i:i_end]].to(self.device, dtype=torch.float32, non_blocking=True)
+            X_left -= X_mean_gpu  # center in-place on GPU, no extra RAM allocation
+
+            for j in range(0, n_cols, chunk_rows):
+                j_end = min(j + chunk_rows, n_cols)
+                X_right = X_cpu[col_idx[j:j_end]].to(self.device, dtype=torch.float32, non_blocking=True)
+                X_right -= X_mean_gpu  # center in-place on GPU
+                K_block[i:i_end, j:j_end] = X_left @ X_right.T
+                del X_right
+                pbar.update(1)
+
+            del X_left
+            # Only sync+free after outer row chunk, not every inner tile
+            if self.device != "cpu":
+                torch.cuda.empty_cache()
+        pbar.close()
+
+        return K_block
+
+    def fit(self, X, y):
+        # Use zero-copy from_numpy for float32 arrays to avoid doubling RAM.
+        # For other dtypes we must copy (cast to float32), so account for both
+        # the original and the new allocation in x_cpu_bytes.
+        if isinstance(X, np.ndarray):
+            if X.dtype == np.float32:
+                X = torch.from_numpy(X)          # zero-copy, shares memory
+                x_cpu_bytes = X.element_size() * X.nelement()
+            else:
+                x_cpu_bytes = X.nbytes + X.size * 4  # original + new float32 copy
+                X = torch.from_numpy(X.astype(np.float32))
+        else:
+            x_cpu_bytes = X.element_size() * X.nelement()
+
+        if isinstance(y, np.ndarray):
+            y = torch.from_numpy(y.astype(np.float32)) if y.dtype != np.float32 \
+                else torch.from_numpy(y)
+        y = y.float()
+
+        n_samples, n_features = X.shape
+        n_targets = y.shape[1]
+
+        # Compute chunk_rows before any GPU allocation, with accurate x_cpu_bytes.
+        chunk_rows = self.chunk_rows or self._auto_chunk_rows(n_features, n_samples, x_cpu_bytes)
+        print(f"   [ChunkedKernel] N={n_samples}, D={n_features}, T={n_targets}, chunk_rows={chunk_rows}")
+
+        # Keep X on CPU in float32 — no precision loss.
+        # X_mean is subtracted on-the-fly inside _build_kernel_chunked when each
+        # chunk is transferred to GPU, so we never store a full centered copy.
+        X_mean = X.mean(0, keepdim=True)  # (1, D) float32, ~0.4 MB for D=104k
+        y_mean = y.mean(0, keepdim=True)
+        y = y - y_mean
+
+        # Val split
+        n_val = int(n_samples * self.val_fraction)
+        perm = torch.randperm(n_samples)
+        val_idx = perm[:n_val]
+        train_idx = perm[n_val:]
+        n_tr = len(train_idx)
+        all_idx = torch.arange(n_samples)
+
+        # Pin X_mean on GPU once — reused by every chunk transfer, tiny (1×D×4B)
+        X_mean_gpu = X_mean.to(self.device)
+
+        # Build K_train (n_tr × n_tr): rows=train_idx, cols=train_idx
+        print("   [ChunkedKernel] Building K_train (chunked)...")
+        K_train = self._build_kernel_chunked(X, X_mean_gpu, train_idx, train_idx, n_features, chunk_rows)
+
+        # Build K_cross (n_val × n_tr): rows=val_idx, cols=train_idx
+        print("   [ChunkedKernel] Building K_cross (chunked)...")
+        K_cross = self._build_kernel_chunked(X, X_mean_gpu, val_idx, train_idx, n_features, chunk_rows)
+
+        y_train = y[train_idx].to(self.device)
+        y_val   = y[val_idx].to(self.device)
+        I_tr = torch.eye(n_tr, dtype=torch.float32, device=self.device)
+
+        # Alpha scan — operates only on small N×N kernels, fast regardless of D
+        print(f"   [ChunkedKernel] Scanning {len(self.alphas)} alphas...")
+        best_score = -float('inf')
+        self.best_alpha = self.alphas[-1]
+        for alpha in self.alphas:
+            try:
+                dual = torch.linalg.solve(K_train + alpha * I_tr, y_train)
+            except RuntimeError:
+                dual = torch.linalg.lstsq(K_train + alpha * I_tr, y_train).solution
+            preds = K_cross @ dual
+            ss_res = ((y_val - preds) ** 2).sum(0)
+            ss_tot = (y_val ** 2).sum(0)
+            r2 = (1 - ss_res / (ss_tot + 1e-6)).mean().item()
+            if r2 > best_score:
+                best_score = r2
+                self.best_alpha = alpha
+
+        print(f"   [ChunkedKernel] Best alpha={self.best_alpha} (Val R2={best_score:.4f})")
+
+        # Free val-phase tensors before building K_full (the largest allocation)
+        del K_train, K_cross, I_tr, y_train, y_val
+        if self.device != "cpu":
+            torch.cuda.empty_cache()
+
+        # Build K_full (N × N): rows=all, cols=all
+        print("   [ChunkedKernel] Building K_full (chunked)...")
+        K_full = self._build_kernel_chunked(X, X_mean_gpu, all_idx, all_idx, n_features, chunk_rows)
+        I_full = torch.eye(n_samples, dtype=torch.float32, device=self.device)
+        y_gpu = y.to(self.device)
+        try:
+            dual_full = torch.linalg.solve(K_full + self.best_alpha * I_full, y_gpu)
+        except RuntimeError:
+            dual_full = torch.linalg.lstsq(K_full + self.best_alpha * I_full, y_gpu).solution
+
+        del K_full, I_full, y_gpu
+        if self.device != "cpu":
+            torch.cuda.empty_cache()
+
+        # Recover primal weights: w = (X - X_mean).T @ dual_full, chunked over N
+        # Center each chunk on GPU — no full centered copy ever stored in RAM.
+        print("   [ChunkedKernel] Recovering primal weights (chunked)...")
+        self.coef_ = torch.zeros((n_features, n_targets), dtype=torch.float32, device='cpu')
+        for j in range(0, n_samples, chunk_rows):
+            j_end = min(j + chunk_rows, n_samples)
+            X_chunk = X[j:j_end].to(self.device, dtype=torch.float32)
+            X_chunk -= X_mean_gpu
+            dual_chunk = dual_full[j:j_end]
+            self.coef_ += (X_chunk.T @ dual_chunk).cpu()
+            del X_chunk, dual_chunk
+
+        del dual_full
+        if self.device != "cpu":
+            torch.cuda.empty_cache()
+
+        y_mean_gpu = y_mean.to(self.device)
+        self.intercept_ = (y_mean_gpu - X_mean_gpu @ self.coef_.to(self.device)).cpu()
+
+    def predict(self, X):
+        if isinstance(X, np.ndarray):
+            X = torch.from_numpy(X).float()
+        return (X @ self.coef_ + self.intercept_).numpy()
+
+
 class TorchBlockRidgeCV:
     """
     Exact ridge under block exclusion/selection constraints by explicitly

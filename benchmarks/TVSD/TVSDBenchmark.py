@@ -121,6 +121,46 @@ class OnlineTVSDV1(OnlineBenchmarkScore):
 BENCHMARK_REGISTRY["OnlineTVSDV1"] = OnlineTVSDV1
 
 
+class TVSDMonkeyFV1(BenchmarkScore):
+    """V1 prediction for Monkey F only (train and test within same monkey)."""
+    def __init__(self, model_identifier, layer_name, debug: bool = False, batch_size: int = 4):
+        super().__init__(
+            stimulus_train_class=TVSDStimulusTrainSet,
+            model_identifier=model_identifier,
+            layer_name=layer_name,
+            stimulus_test_class=TVSDStimulusTestSet,
+            assembly_class=TVSDAssemblyMonkeyFV1,
+            assembly_train_kwargs={'train': True},
+            assembly_test_kwargs={'train': False},
+            batch_size=batch_size,
+            num_workers=8,
+            debug=debug
+        )
+
+
+BENCHMARK_REGISTRY["TVSDMonkeyFV1"] = TVSDMonkeyFV1
+
+
+class TVSDMonkeyNV1(BenchmarkScore):
+    """V1 prediction for Monkey N only (train and test within same monkey)."""
+    def __init__(self, model_identifier, layer_name, debug: bool = False, batch_size: int = 4):
+        super().__init__(
+            stimulus_train_class=TVSDStimulusTrainSet,
+            model_identifier=model_identifier,
+            layer_name=layer_name,
+            stimulus_test_class=TVSDStimulusTestSet,
+            assembly_class=TVSDAssemblyMonkeyNV1,
+            assembly_train_kwargs={'train': True},
+            assembly_test_kwargs={'train': False},
+            batch_size=batch_size,
+            num_workers=8,
+            debug=debug
+        )
+
+
+BENCHMARK_REGISTRY["TVSDMonkeyNV1"] = TVSDMonkeyNV1
+
+
 class TVSDV4(BenchmarkScore):
     def __init__(self, model_identifier, layer_name, debug: bool = False, batch_size: int = 4):
         super().__init__(

@@ -3,6 +3,12 @@ import os
 import inspect
 from typing import List, Union
 
+# Use project-local bbscore_data when running from this repo (avoids re-downloading)
+_project_root = os.path.dirname(os.path.abspath(__file__))
+_project_data = os.path.join(_project_root, "bbscore_data")
+if os.path.exists(_project_data):
+    os.environ["SCIKIT_LEARN_DATA"] = _project_data
+
 from benchmarks import BENCHMARK_REGISTRY
 from metrics import METRICS, validate_metric_benchmark, get_compatible_metrics
 from models import MODEL_REGISTRY
@@ -17,7 +23,8 @@ def test_pipeline(
     debug: bool,
     use_ridge_smart_memory: bool,
     random_projection: str,
-    aggregation_mode: str
+    aggregation_mode: str,
+    save_features: bool = False,
 ):
     """
     Tests the benchmark pipeline with a given model, layer(s), and benchmark.
@@ -90,6 +97,12 @@ def test_pipeline(
         pipeline.use_ridge_smart_memory = use_ridge_smart_memory
         if use_ridge_smart_memory:
             print("Ridge smart memory feature is ENABLED.")
+
+    # Set Feature Saving
+    if hasattr(pipeline, 'save_features'):
+        pipeline.save_features = save_features
+        if save_features:
+            print("Saving extracted features to disk.")
 
     # Set Random Projection
     if hasattr(pipeline, 'initialize_rp'):
@@ -171,8 +184,8 @@ if __name__ == "__main__":
         "--metric",
         type=str,
         nargs="+",
-        default=["ridge"],
-        help=f"One or more metric identifiers. Available metrics: {', '.join(METRICS.keys())}",
+        default=["torch_ridge"],
+        help=f"One or more metric identifiers. Use 'torch_ridge' for GPU acceleration. Available: {', '.join(METRICS.keys())}",
     )
     parser.add_argument(
         "--batch-size",
@@ -204,6 +217,11 @@ if __name__ == "__main__":
         choices=["none", "concatenate", "stack"],
         help="How to combine layers: 'none' (separate), 'concatenate' (feature concat), 'stack' (new dim).",
     )
+    parser.add_argument(
+        "--save-features",
+        action="store_true",
+        help="Save extracted features and labels to bbscore_data/features/ for later reuse.",
+    )
 
     args = parser.parse_args()
 
@@ -223,5 +241,6 @@ if __name__ == "__main__":
         debug=args.debug,
         use_ridge_smart_memory=args.use_ridge_smart_memory,
         random_projection=args.random_projection,
-        aggregation_mode=args.aggregation_mode
+        aggregation_mode=args.aggregation_mode,
+        save_features=args.save_features,
     )

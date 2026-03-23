@@ -18,7 +18,14 @@ test_eval*
 
 # Ignore environment
 .venv/
+.conda_env
 wandb/
+.pip_*
+.mamba_*
+bin/micromamba
+activate_bbscore_peggyo.sh
+requirements_peggyo.txt
+requirements_peggyo.yaml
 
 out/
 
@@ -28,3 +35,12 @@ NSDStimulusSet/
 
 # Local files
 generate_presentation.py
+bbscore_data
+setup_validation
+
+#IDE
+.cursor
+
+# Model weights (keep directory via .gitkeep, ignore actual weight files)
+models/retina_cnn/weights/*
+!models/retina_cnn/weights/.gitkeep

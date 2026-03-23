@@ -166,3 +166,64 @@ class PIXEL:
         batch_size, T = features_np.shape[0], features_np.shape[1]
         flattened_features = features_np.reshape(batch_size, T, -1)
         return flattened_features
+
+
+class GrayscalePixel:
+    """
+    Raw grayscale pixel luminance baseline (Condition A).
+    No ImageNet normalization - just luminance values for V1 prediction baseline.
+    """
+
+    def __init__(self):
+        self.static = True
+        self.model = None
+        # Consistent size for feature dimensionality (match common retina input)
+        self.image_size = (80, 160)
+
+    def get_model(self, identifier):
+        """Returns identity model that passes through pixel values."""
+        self.model = PixelModel()
+        return self.model
+
+    def preprocess_fn(self, input_data, fps=None):
+        """
+        Converts to grayscale, resizes, returns raw luminance (no ImageNet norm).
+        Returns: (T, 1, H, W) for compatibility with static extractor.
+        """
+        h, w = self.image_size
+        raw_frames = []
+
+        if isinstance(input_data, Image.Image):
+            input_data = [input_data]
+        elif isinstance(input_data, list):
+            pass
+        else:
+            raise ValueError(
+                "input_data must be PIL.Image or list of PIL.Image"
+            )
+
+        for frame in input_data:
+            if isinstance(frame, np.ndarray):
+                frame = Image.fromarray(np.uint8(frame)).convert("L")
+            elif isinstance(frame, Image.Image):
+                frame = frame.convert("L")
+            else:
+                raise ValueError("Each frame must be PIL.Image or numpy array")
+            raw_frames.append(frame)
+
+        # Resize, convert to tensor, raw [0,1] luminance (no normalization)
+        tensors = []
+        for img in raw_frames:
+            img = img.resize((w, h), Image.BILINEAR)
+            arr = np.array(img, dtype=np.float32) / 255.0
+            tensors.append(torch.from_numpy(arr).unsqueeze(0))  # (1, H, W)
+
+        out = torch.stack(tensors, dim=0)  # (T, 1, H, W)
+        return out
+
+    def postprocess_fn(self, features_np):
+        """Flatten to (batch_size, -1)."""
+        if isinstance(features_np, torch.Tensor):
+            features_np = features_np.cpu().numpy()
+        batch_size = features_np.shape[0]
+        return features_np.reshape(batch_size, -1)

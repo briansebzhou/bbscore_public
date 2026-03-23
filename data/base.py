@@ -458,8 +458,16 @@ class BaseDataset(ABC):
                 "Invalid GCS URL. Expected format: gs://bucket_name/path/to/file")
         bucket_name, blob_name = parts
 
-        # Initialize the GCS client (assumes credentials are set up via GOOGLE_APPLICATION_CREDENTIALS)
-        client = storage.Client()
+        # Initialize the GCS client. Project is read from GCLOUD_PROJECT or
+        # GOOGLE_CLOUD_PROJECT env vars; fall back to a dummy value since we
+        # only need read access to a public/shared bucket.
+        project = (
+            os.environ.get("GCLOUD_PROJECT")
+            or os.environ.get("GOOGLE_CLOUD_PROJECT")
+            or os.environ.get("GCLOUD_PROJECT_ID")
+            or "bbscore-project"
+        )
+        client = storage.Client(project=project)
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
         blob.download_to_filename(filepath)

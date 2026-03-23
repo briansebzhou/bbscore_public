@@ -9,6 +9,7 @@ from .soft_matching import SoftMatchingMetric
 from .semi_matching import SemiMatchingMetric
 from .rsa import RSAMetric, TemporalRSAMetric
 from .versa import VeRSAMetric
+from .cross_model import CrossModelMetric
 from .online_mappers import OnlineLinearClassifier, OnlineLinearRegressor
 from .online_mappers import OnlineTransformerClassifier
 from .orientation_selectivity import OrientationSelectivity
@@ -41,6 +42,8 @@ METRICS = {
     "physion_contact_detection": OnlinePhysionContactDetection,
     # topographic metrics
     "orientation_selectivity": OrientationSelectivity,
+    # cross-model comparison
+    "cross_model": CrossModelMetric,
 }
 
 
@@ -79,6 +82,9 @@ METRIC_GROUPS = {
     "tr_level": [
         "ridge", "temporal_rsa",
     ],
+    "cross_model_comparison": [
+        "cross_model",
+    ],
 }
 
 # Maps benchmark name prefixes to their compatible metric groups.
@@ -111,6 +117,7 @@ _BENCHMARK_METRIC_MAP = [
                                      "physion_placement"]),
     ("SSV2",              ["online_classification"]),
     ("AugmentedSSV2",     ["online_classification"]),
+    ("CrossModel",        ["cross_model_comparison"]),
 ]
 
 
@@ -144,5 +151,5 @@ def validate_metric_benchmark(metric_name, benchmark_name):
     return metric_name in compatible
 
 
-__all__ = ["BaseMetric", "OnlineMetric", "METRICS",
+__all__ = ["BaseMetric", "OnlineMetric", "METRICS", "CrossModelMetric",
            "get_compatible_metrics", "validate_metric_benchmark"]
